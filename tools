@@ -1,0 +1,416 @@
+#!/usr/bin/env zsh
+# tools - interactive helper CLI with networking submenu
+
+# Ensure no xtrace/debug prints leak
+set +x 2>/dev/null || true
+unsetopt xtrace 2>/dev/null || true
+unsetopt verbose 2>/dev/null || true
+
+set -o pipefail
+
+main() {
+  emulate -L zsh
+  set +x 2>/dev/null || true
+  unsetopt xtrace 2>/dev/null || true
+  unsetopt verbose 2>/dev/null || true
+  # Colors
+  local reset='\e[0m' bold='\e[1m' dim='\e[2m' red='\e[31m' green='\e[32m' yellow='\e[33m' blue='\e[34m' magenta='\e[35m' cyan='\e[36m'
+
+  # Menu entries: name|description (numbers only in UI)
+  local -a menu=(
+    'new|Create directory and cd into it'
+    'serve|Start a simple HTTP server'
+    'ip|Show local and public IP addresses'
+    'net|Networking tools submenu'
+    'ports|List listening TCP ports'
+    'kill|Kill process listening on a port'
+    'extract|Extract common archive formats'
+    'pretty|Pretty-print JSON from stdin'
+    'uuid|Generate a UUID'
+    'clean|Remove .DS_Store files recursively'
+    'top|Show top 10 processes by CPU'
+    'edit|Edit ~/.zshrc (this file)'
+    'help|Show help'
+  )
+
+  _print_menu() {
+    printf "${magenta}┌─ Tools ─────────────────────────────────────┐${reset}\n"
+    local idx=1 entry name desc
+    for entry in "${menu[@]}"; do
+      name=${entry%%|*}; desc=${entry#*|}
+      printf "${magenta}│${reset} ${bold}%2d${reset} ${cyan}%s${reset} - %s\n" "$idx" "$name" "$desc"
+      idx=$((idx+1))
+    done
+    printf "${magenta}└──────────────────────────────────────────────┘${reset}\n"
+    printf "Choose by number or name (q to quit): "
+  }
+
+  usage_main() {
+    cat <<'EOF'
+Usage: tools (interactive) or tools <command> [args]
+Commands:
+  new DIR                  create DIR and cd into it (ex: new myproj)
+  serve [PORT] [DIR]       start HTTP server (ex: serve 9000 .)
+  ip                       show local and public IPs
+  ports                    list listening TCP ports
+  kill PORT                kill process listening on PORT (ex: kill 3000)
+  extract FILE             extract archives (.zip, .tar.gz, .7z, ...)
+  pretty                   pretty-print JSON from stdin (ex: cat a.json | tools pretty)
+  uuid                     generate a UUID
+  clean                    remove .DS_Store files recursively
+  top                      show top 10 processes by CPU
+  edit                     open ~/.zshrc for editing
+  net                      open the networking submenu
+EOF
+  }
+
+  usage_net() {
+    cat <<'EOF'
+Networking commands (inside submenu):
+  trace HOST               traceroute to host (ex: trace 1.1.1.1)
+  wifi                     show Wi‑Fi details (en0)
+  scan HOST [PORTS]        quick port scan (ex: scan 192.168.0.1 1-1024)
+  monitor on [CHANNEL]     start capture on en0 (ex: monitor on 6)
+  monitor off              stop capture and save file to ~/
+  monitor status           show running status
+  back                     return to main menu
+EOF
+  }
+
+  tools___net_loop() {
+    local sub choice first restargs
+    local -a netmenu=(
+      'trace|Traceroute to host'
+      'wifi|Show Wi-Fi details (en0)'
+      'scan|Port scan a host'
+      'monitor|Toggle monitor mode on en0 (on/off)'
+    )
+    while :; do
+      # Ensure debugging is disabled in submenu loop as well
+      set +x +v 2>/dev/null || true
+      unsetopt xtrace verbose 2>/dev/null || true
+      if command -v fzf >/dev/null 2>&1; then
+        local lines="" entry name desc
+        for entry in "${netmenu[@]}"; do
+          name=${entry%%|*}; desc=${entry#*|}
+          lines+=$(printf "${cyan}%-10s${reset} - %s\n" "$name" "$desc")
+        done
+        local sel=$(printf "%b" "$lines" | fzf --ansi --prompt="Networking ▸ " --height=100% --reverse --border --color=16)
+        [[ -z "$sel" ]] && break
+        sub=$(printf "%s" "$sel" | awk '{print $1}')
+        set --
+      else
+        _print_net_menu() {
+          printf "${blue}┌─ Networking ─────────────────────────────────┐${reset}\n"
+          local entry name desc
+          for entry in "${netmenu[@]}"; do
+            name=${entry%%|*}; desc=${entry#*|}
+            printf "${blue}│${reset} ${cyan}%-8s${reset} - %s\n" "$name" "$desc"
+          done
+          printf "${blue}└──────────────────────────────────────────────┘${reset}\n"
+          printf "Type a command (help for usage, b to go back): "
+        }
+        _print_net_menu
+        IFS= read -r choice || break
+        [[ -z "$choice" ]] && continue
+        first="$choice"; restargs=""
+        if [[ "$choice" == *" "* ]]; then first=${choice%% *}; restargs=${choice#* } ; fi
+        if [[ "$first" == q || "$first" == quit || "$first" == b || "$first" == back ]]; then break; fi
+        sub="$first"; set -- ${=restargs}
+      fi
+
+      case "$sub" in
+        help|usage)
+          usage_net
+          ;;
+        trace|traceroute)
+          local host="${1:-}"
+          if [[ -z "$host" ]]; then printf "Host: "; IFS= read -r host; fi
+          if [[ -z "$host" ]]; then echo "Usage: trace HOST"; continue; fi
+          if command -v traceroute >/dev/null 2>&1; then traceroute "$host"; else echo "traceroute not found"; fi
+          ;;
+        wifi)
+          local airport='/System/Library/PrivateFrameworks/Apple80211.framework/Versions/Current/Resources/airport'
+          if [[ -x "$airport" ]]; then "$airport" -I; else networksetup -getairportnetwork en0; echo; ifconfig en0; fi
+          ;;
+        scan)
+          local host="${1:-}"; local ports="${2:-}"
+          if [[ -z "$host" ]]; then printf "Host: "; IFS= read -r host; fi
+          if [[ -z "$ports" ]]; then printf "Ports [common]: "; IFS= read -r ports; fi
+          if [[ -z "$host" ]]; then echo "Usage: scan HOST [PORTS]"; continue; fi
+          if command -v nmap >/dev/null 2>&1; then
+            if [[ -n "$ports" ]]; then nmap -p "$ports" "$host"; else nmap -F "$host"; fi
+          else
+            echo "nmap not found; basic TCP scan with nc (common ports)"
+            local common="22 80 443 8080 8443 3306 5432 6379 27017 25 110 143 993 995 53 123"
+            for p in ${ports:-$common}; do nc -G 1 -z "$host" "$p" >/dev/null 2>&1 && echo "open tcp/$p"; done
+          fi
+          ;;
+        monitor)
+          local action="${1:-}"; local channel="${2:-}"; local pidfile="$HOME/.cache/tools/monitor_en0.pid"; local cachedir="$HOME/.cache/tools"; mkdir -p "$cachedir"
+          # Resolve airport path (built-in macOS tool)
+          local airport=""
+          # Allow override via env var
+          if [[ -n ${AIRPORT:-} && -x ${AIRPORT} ]]; then
+            airport="$AIRPORT"
+          else
+            local -a candidates=(
+              '/System/Library/PrivateFrameworks/Apple80211.framework/Versions/Current/Resources/airport'
+              '/System/Library/PrivateFrameworks/Apple80211.framework/Versions/A/Resources/airport'
+            )
+            local apath
+            for apath in "${candidates[@]}"; do
+              if [[ -x "$apath" ]]; then airport="$apath"; break; fi
+            done
+            [[ -z "$airport" ]] && airport=$(command -v airport 2>/dev/null || true)
+          fi
+          case "$action" in
+            status)
+              if [[ -f "$pidfile" ]] && kill -0 $(cat "$pidfile") 2>/dev/null; then
+                echo "Monitor running (pid $(cat "$pidfile"))"
+              else
+                echo "Monitor not running"
+              fi
+              ;;
+            on)
+              if [[ -f "$pidfile" ]] && kill -0 $(cat "$pidfile") 2>/dev/null; then echo "Monitor already running (pid $(cat "$pidfile"))"; continue; fi
+              # Ensure sudo is authenticated once in the foreground
+              if ! sudo -n true 2>/dev/null; then
+                echo "Elevated privileges required for monitor capture (sudo)."
+                sudo -v || { echo "sudo cancelled"; continue; }
+              fi
+              # Determine channel if not provided
+              if [[ -z "$channel" ]]; then printf "Channel [1]: "; IFS= read -r channel; fi
+              if [[ -z "$channel" ]] && [[ -x "$airport" ]]; then
+                channel=$("$airport" -I 2>/dev/null | awk -F': ' '/ channel/{print $2}' | awk -F',' '{print $1}' | xargs)
+              fi
+              channel=${channel:-1}
+              if [[ -x "$airport" ]]; then
+                local iface="${TOOLS_IFACE:-en0}"
+                echo "Starting airport sniff on $iface channel $channel. Output: /tmp/airportSniff*.cap"
+                # Try with explicit interface first; if it dies, try without interface
+                local pid
+                sudo -n nohup "$airport" "$iface" sniff "$channel" >/dev/null 2>&1 & pid=$!; echo $pid > "$pidfile"; sleep 0.5
+                if ! kill -0 "$pid" 2>/dev/null; then
+                  sudo -n nohup "$airport" sniff "$channel" >/dev/null 2>&1 & pid=$!; echo $pid > "$pidfile"; sleep 0.5
+                fi
+                if kill -0 $(cat "$pidfile") 2>/dev/null; then
+                  echo "Started (pid $(cat "$pidfile"))"
+                else
+                  echo "airport sniff failed to start; falling back to tcpdump"
+                  local outfile="$HOME/monitor_${iface}_$(date +%s).pcap"
+                  sudo -n nohup tcpdump -I -i "$iface" -w "$outfile" >/dev/null 2>&1 & echo $! > "$pidfile"
+                  echo "Started (pid $(cat "$pidfile"))"
+                fi
+              else
+                local iface="${TOOLS_IFACE:-en0}"
+                local outfile="$HOME/monitor_${iface}_$(date +%s).pcap"
+                echo "airport tool not available; using tcpdump monitor mode -> $outfile"
+                sudo -n nohup tcpdump -I -i "$iface" -w "$outfile" >/dev/null 2>&1 & echo $! > "$pidfile"
+                echo "Started (pid $(cat "$pidfile"))"
+              fi
+              ;;
+            off)
+              if [[ -f "$pidfile" ]] && kill -0 $(cat "$pidfile") 2>/dev/null; then
+                local mpid=$(cat "$pidfile")
+                echo "Stopping monitor (pid $mpid)"
+                sudo -n kill "$mpid" 2>/dev/null || kill "$mpid" 2>/dev/null || true
+                rm -f "$pidfile"
+                # If airport was used, move latest cap to home for convenience
+                if [[ -x "$airport" ]]; then
+                  sleep 0.5
+                  local latest=$(ls -t /tmp/airportSniff*.cap 2>/dev/null | head -n 1 || true)
+                  if [[ -n "$latest" ]]; then
+                    # Try to infer channel
+                    local cur_ch="$( "$airport" -I 2>/dev/null | awk -F': ' '/ channel/{print $2}' | awk -F',' '{print $1}' | xargs )"
+                    local iface="${TOOLS_IFACE:-en0}"
+                    local dest="$HOME/monitor_${iface}_$(date +%s)_ch${cur_ch:-unk}.cap"
+                    mv -n "$latest" "$dest" 2>/dev/null && echo "Saved capture: $dest" || echo "Capture file: $latest"
+                  else
+                    echo "No airport capture file found in /tmp"
+                  fi
+                fi
+              else
+                echo "No running monitor found"
+              fi
+              ;;
+            *)
+              echo "Invalid monitor command. Usage:"
+              usage_net | sed -n '3,8p'
+              ;;
+          esac
+          ;;
+        *)
+          echo "Unknown networking command: $sub"
+          usage_net
+          ;;
+      esac
+    done
+  }
+
+  do_cmd() {
+    local cmd="${1:-}"; shift 2>/dev/null || true
+    case "$cmd" in
+      new)
+        local dir="${1:-}" base=""
+        if [[ -z "$dir" ]]; then
+          printf "Directory name: "
+          IFS= read -r dir
+        fi
+        if [[ -z "$dir" ]]; then echo "Usage: new DIR"; return 1; fi
+        printf "Location [current/Desktop/bin/other] (current): "
+        local loc=""; IFS= read -r loc; loc=${loc:l}
+        case "$loc" in
+          desktop|d) base="$HOME/Desktop" ;;
+          bin|b)     base="$HOME/bin" ;;
+          other|o)
+            printf "Base path: "
+            IFS= read -r base
+            [[ -z "$base" ]] && base="$PWD"
+            ;;
+          ""|current|c|here) base="$PWD" ;;
+          *) base="$PWD" ;;
+        esac
+        local target="$base/$dir"
+        mkdir -p -- "$target" && cd -- "$target" && echo "Created: $target"
+        ;;
+      serve)
+        local port="${1:-}" dir="${2:-}"
+        if [[ -z "$port" ]]; then
+          printf "Port [8000]: "; IFS= read -r port; port=${port:-8000}
+        fi
+        if [[ -z "$dir" ]]; then
+          printf "Directory [.]: "; IFS= read -r dir; dir=${dir:-.}
+        fi
+        if command -v python3 >/dev/null 2>&1; then (cd -- "$dir" && python3 -m http.server "$port");
+        elif command -v python >/dev/null 2>&1; then (cd -- "$dir" && python -m http.server "$port" 2>/dev/null || python -m SimpleHTTPServer "$port");
+        else echo "Python not found. Install Python 3 (e.g., via Homebrew) or use system Python."; fi
+        ;;
+      ip)
+        local iface=$(route -n get default 2>/dev/null | awk '/interface:/{print $2}')
+        local local_ip=$(ipconfig getifaddr "$iface" 2>/dev/null || echo "N/A")
+        local public_ip=$(curl -fsS https://ifconfig.me 2>/dev/null || curl -fsS https://api.ipify.org 2>/dev/null || echo "N/A")
+        printf "Local:  %s\nPublic: %s\n" "$local_ip" "$public_ip"
+        ;;
+      ports)
+        lsof -nP -iTCP -sTCP:LISTEN
+        ;;
+      kill)
+        local port="${1:-}"
+        if [[ -z "$port" ]]; then printf "Port to kill: "; IFS= read -r port; fi
+        if [[ -z "$port" ]]; then echo "Usage: kill PORT (ex: kill 3000)"; return 1; fi
+        local pids; pids=$(lsof -ti tcp:"$port" 2>/dev/null); if [[ -n "$pids" ]]; then echo "$pids" | xargs kill -9; else echo "No process on port $port"; fi
+        ;;
+      extract)
+        local file="${1:-}"
+        if [[ -z "$file" ]]; then printf "Archive file path: "; IFS= read -r file; fi
+        if [[ -z "$file" ]]; then echo "Usage: extract FILE (ex: extract archive.zip)"; return 1; fi
+        if [[ ! -f "$file" ]]; then echo "File not found: $file"; return 1; fi
+        case "$file" in
+          *.tar.bz2) tar xjf "$file" ;;
+          *.tar.gz)  tar xzf "$file" ;;
+          *.bz2)     bunzip2 "$file" ;;
+          *.rar)     unrar x "$file" ;;
+          *.gz)      gunzip "$file" ;;
+          *.tar)     tar xf "$file" ;;
+          *.tbz2)    tar xjf "$file" ;;
+          *.tgz)     tar xzf "$file" ;;
+          *.zip)     unzip "$file" ;;
+          *.Z)       uncompress "$file" ;;
+          *.7z)      7z x "$file" ;;
+          *)         echo "Unsupported archive: $file" ;;
+        esac
+        ;;
+      pretty)
+        local _py="python3"; command -v python3 >/dev/null 2>&1 || _py="python"
+        if ! command -v "$_py" >/dev/null 2>&1; then echo "Python not found. Pipe JSON into this command, ex: cat a.json | tools pretty"; return 1; fi
+        if [[ -n "${1:-}" ]]; then
+          if [[ -f "$1" ]]; then
+            "$_py" -c 'import sys,json; print(json.dumps(json.load(open(sys.argv[1], "rb")), indent=2, ensure_ascii=False))' "$1"
+          else
+            "$_py" -c 'import sys,json; print(json.dumps(json.loads(sys.argv[1]), indent=2, ensure_ascii=False))' "$1"
+          fi
+        else
+          "$_py" -c 'import sys,json
+try:
+    data=json.load(sys.stdin)
+except Exception as e:
+    sys.exit(f"Invalid JSON: {e}")
+print(json.dumps(data, indent=2, ensure_ascii=False))'
+        fi
+        ;;
+      uuid)
+        if command -v uuidgen >/dev/null 2>&1; then uuidgen; else
+          local _py="python3"; command -v python3 >/dev/null 2>&1 || _py="python"
+          if ! command -v "$_py" >/dev/null 2>&1; then echo "Python not found"; return 1; fi
+          "$_py" - <<'PY'
+import uuid; print(uuid.uuid4())
+PY
+        fi
+        ;;
+      clean)
+        find . -name '.DS_Store' -type f -print -delete
+        ;;
+      top)
+        ps -Ao %cpu,%mem,pid,comm | sort -nr | head -n 10
+        ;;
+      edit)
+        ${EDITOR:-nano} "$HOME/.zshrc"
+        ;;
+      net)
+        tools___net_loop
+        ;;
+      help)
+        usage_main
+        ;;
+      q|quit|exit)
+        return 0
+        ;;
+      *)
+        echo "Unknown command: $cmd"
+        usage_main
+        return 1 ;;
+    esac
+  }
+
+  local cmd=${1:-}
+  if [[ -z "$cmd" || "$cmd" == "ui" ]]; then
+    while :; do
+      # Ensure debugging is disabled in loops
+      set +x +v 2>/dev/null || true
+      unsetopt xtrace verbose 2>/dev/null || true
+      local choice first restargs
+      if command -v fzf >/dev/null 2>&1; then
+        local lines="" entry name desc
+        for entry in "${menu[@]}"; do name=${entry%%|*}; desc=${entry#*|}; lines+=$(printf "${cyan}%-10s${reset} - %s\n" "$name" "$desc"); done
+        local sel=$(printf "%b" "$lines" | fzf --ansi --prompt="Tools ▸ " --height=100% --reverse --border --color=16)
+        [[ -z "$sel" ]] && break
+        cmd=$(printf "%s" "$sel" | awk '{print $1}')
+        set --
+      else
+        _print_menu
+        IFS= read -r choice || break
+        [[ -z "$choice" ]] && continue
+        first="$choice"; restargs=""
+        if [[ "$choice" == *" "* ]]; then first=${choice%% *}; restargs=${choice#* } ; fi
+        if [[ "$first" == q || "$first" == quit || "$first" == exit ]]; then break; fi
+        if [[ "$first" =~ ^[0-9]+$ ]]; then
+          local n=$((first))
+          if (( n >= 1 && n <= ${#menu[@]} )); then
+            local sel="${menu[$n]}"; cmd="${sel%%|*}"; set -- ${=restargs}
+          else
+            echo "Invalid selection"; continue
+          fi
+        else
+          cmd="$first"; set -- ${=restargs}
+        fi
+      fi
+      do_cmd "$cmd" "$@" || true
+    done
+  else
+    shift
+    do_cmd "$cmd" "$@"
+  fi
+}
+
+main "$@"
